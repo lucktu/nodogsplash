@@ -284,35 +284,71 @@ main_loop(void)
 	debug(LOG_NOTICE, "Detected gateway %s at %s (%s)", config->gw_interface, config->gw_ip, config->gw_mac);
 
 	/* Initializes the web server */
-	/* Define the MHD startup parameter array, ending with MHD_OPTION_END */
-	struct MHD_Daemon *webserver;
-  
+	// Check if port multiplexing is supported
 	if (config->address_reuse) {
-    		/* debug(LOG_NOTICE, "Enable port reuse in the web authentication server") */
-    		webserver = MHD_start_daemon(
-        		MHD_USE_EPOLL_INTERNALLY | MHD_USE_TCP_FASTOPEN,
-        		config->gw_port,
-        		NULL, NULL,
-        		libmicrohttpd_cb, NULL,
-        		MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int)120,
-        		MHD_OPTION_LISTENING_ADDRESS_REUSE, 1,
-        		MHD_OPTION_END
-    		);
-	} else {
-    		debug(LOG_NOTICE, "The web authentication server does not have port reuse enabled.");
-    		webserver = MHD_start_daemon(
-        		MHD_USE_EPOLL_INTERNALLY | MHD_USE_TCP_FASTOPEN,
-        		config->gw_port,
-        		NULL, NULL,
-        		libmicrohttpd_cb, NULL,
-        		MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int)120,
-        		MHD_OPTION_END
-    		);
+    		int test_sock = socket(AF_INET, SOCK_STREAM, 0);
+    		if (test_sock >= 0) {
+        		int reuse = 1;
+        		// Try setting SO_REUSEPORT
+        		if (setsockopt(test_sock, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
+            			if (errno == ENOPROTOOPT) {
+                			// The system does not support SO_REUSEPORT
+                			debug(LOG_WARNING, "The system does not support port multiplexing(SO_REUSEPORT), Automatically disabled");
+                			config->address_reuse = 0;
+            			}
+        		}
+        		close(test_sock);
+    		}
 	}
+	// Define the MHD startup parameter array, ending with MHD_OPTION_END.
+  	struct MHD_Daemon *webserver = NULL;
+	int retry_count = 0;
+	const int max_retries = 50;
+	const int retry_interval = 5;
 
-	if (webserver == NULL) {
-    		debug(LOG_ERR, "Unable to create a web authentication server: %s", strerror(errno));
-    		exit(1);
+	while (webserver == NULL && retry_count < max_retries) {
+    	if (config->address_reuse) {
+        	//debug(LOG_NOTICE, "Enable port reuse in the web authentication server");
+       		webserver = MHD_start_daemon(
+            	MHD_USE_EPOLL_INTERNALLY | MHD_USE_TCP_FASTOPEN,
+            	config->gw_port,
+           	 	NULL, NULL,
+            	libmicrohttpd_cb, NULL,
+            	MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int)120,
+            	MHD_OPTION_LISTENING_ADDRESS_REUSE, 1,
+            	MHD_OPTION_END
+        	);
+    	} else {
+        	debug(LOG_NOTICE, "The web authentication server does not have port reuse enabled");
+        	webserver = MHD_start_daemon(
+            	MHD_USE_EPOLL_INTERNALLY | MHD_USE_TCP_FASTOPEN | MHD_USE_ITC,
+            	config->gw_port,
+            	NULL, NULL,
+            	libmicrohttpd_cb, NULL,
+            	MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int)120,
+           		MHD_OPTION_END
+        	);
+    	}
+      
+    	if (webserver == NULL) {
+        	int err = errno;
+        	if (err == EADDRINUSE) {
+            	// Retry only if the port is already in use
+            	retry_count++;
+            	if (retry_count < max_retries) {
+                	debug(LOG_WARNING, "%d port is already in use,Retry in %d seconds (%d/%d)",
+                    config->gw_port, retry_interval, retry_count, max_retries);
+                	sleep(retry_interval);
+            	} else {
+                	debug(LOG_ERR, "%d port is occupied, maximum retries reached. exit", config->gw_port);
+                	exit(1);
+            	}
+        	} else {
+            	// Other errors exit immediately
+            	debug(LOG_ERR, "Unable to create a web authentication server: %s (errno=%d)", strerror(err), err);
+            	exit(1);
+        	}
+    	}
 	}
 
 	/* TODO: set listening socket */

@@ -53,7 +53,6 @@ usage(void)
 		"  -d <level>  Debug level (%d-%d)\n"
 		"  -s          Log to syslog\n"
 		"  -w <path>   Ndsctl socket path\n"
-		"  -a          Disable port multiplexing\n"
 		"  -h          Print this help\n"
 		"  -v          Print version\n"
 		"\n", DEBUGLEVEL_MIN, DEBUGLEVEL_MAX
@@ -68,7 +67,7 @@ void parse_commandline(int argc, char **argv)
 
 	s_config *config = config_get_config();
 
-	while (-1 != (c = getopt(argc, argv, "c:hfd:sw:vi:r:64a"))) {
+	while (-1 != (c = getopt(argc, argv, "c:hfd:sw:vi:r:64"))) {
 
 		switch(c) {
 
@@ -126,10 +125,6 @@ void parse_commandline(int argc, char **argv)
 			exit(1);
 			config->ip6 = 1;
 			break;
-
-		case 'a':  
-    			config->address_reuse = 0;  // disable port multiplexing
-    			break;
 
 		default:
 			usage();
