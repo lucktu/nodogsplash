@@ -1,0 +1,241 @@
+name: Compile nodogsplash for various platforms
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Compile the main branch of lucktu/nodogsplash'
+        required: true
+        default: 'main'
+      del:
+        description: 'Should we delete the compilation process history?'
+        required: true
+        default: true
+        type: boolean
+      rel:
+        description: 'Should a Release be published after compilation?'
+        required: false
+        default: false
+        type: boolean
+      tag:
+        description: 'Specify the Release version number (leave blank to use the source code commit hash value)'
+        required: false
+        default: ''
+      upx:
+        description: 'Should UPX be used to compress Linux binaries?'
+        required: true
+        default: true
+        type: boolean
+        
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+  
+env:
+  tag: "${{ github.event.inputs.tag }}"
+  rel: "${{ github.event.inputs.rel }}"
+  branch: "${{ github.event.inputs.branch }}"
+  TZ: Asia/Shanghai
+  
+permissions:
+  contents: write
+  actions: write 
+  
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+
+        - target: aarch64-unknown-linux
+          URL: aarch64-linux-musl
+        
+        - target: armv7l-linux-eabihf
+          URL: armv7l-linux-musleabihf
+
+        - target: armv7m-linux-eabi
+          URL: armv7m-linux-musleabi
+          
+        - target: arm-linux-eabihf
+          URL: arm-linux-musleabihf
+
+        - target: arm-linux-eabi
+          URL: arm-linux-musleabi
+
+        - target: mipsel-linux
+          URL: mipsel-linux-muslsf
+
+        - target: mips-linux
+          URL: mips-linux-muslsf
+
+        - target: mips64-linux
+          URL: mips64-linux-musl
+          
+        - target: x86_64-linux
+          URL: x86_64-linux-musl
+
+        - target: i686-linux
+          URL: i686-linux-musl
+          
+    runs-on: ubuntu-latest
+    env:
+         TARGET: ${{ matrix.target }}
+         URL: ${{ matrix.URL }}
+    steps:
+     - name: Checkout code
+       uses: actions/checkout@v4
+       with:
+        repository: lucktu/nodogsplash
+        ref: ${{ env.branch }}
+        
+     - name: download linux-musl-gcc
+       uses: lmq8267/dl-musl@main
+       with:
+        target: ${{ matrix.URL }}
+        static: true
+        gccpath: /opt/musl_gcc
+
+     - name: Set environment variables
+       run: |
+         CFLAGS="-ffunction-sections -fdata-sections -O2 -w $CFLAGS -I/opt/microhttpd-${URL}/include -I/opt/json-c-${URL}/include"
+           
+         LDFLAGS="-s -Wl,--gc-sections $LDFLAGS -L/opt/microhttpd-${URL}/lib -L/opt/json-c-${URL}/lib"
+           
+         echo "CFLAGS=$CFLAGS" >> $GITHUB_ENV
+         echo "CXXFLAGS=$CFLAGS" >> $GITHUB_ENV
+         echo "CPPFLAGS=$CFLAGS" >> $GITHUB_ENV
+         echo "LDFLAGS=$LDFLAGS" >> $GITHUB_ENV
+
+     - name: Caching the microhttpd library
+       id: cache-microhttpd
+       uses: actions/cache@v4
+       with:
+        path: |
+          /opt/microhttpd-${{ matrix.URL }}
+        key: microhttpd-${{ matrix.URL }}-cache
+     - name: Compile the microhttpd library
+       env:
+         TARGET: ${{ matrix.target }}
+         URL: ${{ matrix.URL }}
+       run: |
+         if [ ! -d "/opt/microhttpd-${URL}" ] || [ -z "$(find /opt/microhttpd-${URL}/lib -name '*.a' 2>/dev/null)" ] ; then
+            wget https://ftp.gnu.org/gnu/libmicrohttpd/libmicrohttpd-0.9.77.tar.gz
+            tar xf libmicrohttpd-0.9.77.tar.gz
+            cd libmicrohttpd-0.9.77
+            echo "###########################Compile microhttpd dependency library########################"
+            ./configure \
+              --host=mipsel-linux-musl \
+              --disable-shared \
+              --enable-static \
+              --without-gnutls \
+              --without-libgcrypt \
+              --without-openssl \
+              --prefix=/opt/microhttpd-${URL}
+            make -j$(nproc)
+            make install
+         else
+          echo "✅ The microhttpd static library is cached, skipping compilation."
+         fi
+     - name: Cache the json-c library
+       id: cache-jsonc
+       uses: actions/cache@v4
+       with:
+        path: /opt/json-c-${{ matrix.URL }}
+        key: jsonc-${{ matrix.URL }}-cache
+
+     - name: Compiling the json-c library
+       env:
+        TARGET: ${{ matrix.target }}
+        URL: ${{ matrix.URL }}
+       run: |
+        if [ ! -d "/opt/json-c-${URL}" ] || [ -z "$(find /opt/json-c-${URL}/lib -name '*.a' 2>/dev/null)" ]; then
+          echo "########################### Compiling a json-c static library ########################"
+          git clone https://github.com/json-c/json-c.git
+          cd json-c
+          git checkout json-c-0.17-20230812
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_C_COMPILER=${URL}-gcc \
+            -DCMAKE_INSTALL_PREFIX=/opt/json-c-${URL} \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
+        else
+          echo "✅ The json-c static library is cached, so compilation is skipped."
+        fi
+     - name: Compiled by nodogsplash
+       env:
+        TAG: ${{ env.tag }}
+        TARGET: ${{ matrix.target }}
+       run: |
+         # Disable TFO or auto-detection if musl is not supported.
+         sed -i 's/MHD_USE_EPOLL_INTERNALLY | MHD_USE_TCP_FASTOPEN,/MHD_USE_EPOLL_INTERNALLY,/g' src/main.c
+         cat src/main.c
+         export CROSS_COMPILE=${URL}-
+         make nodogsplash
+         make ndsctl
+         ls
+         $STRIP nodogsplash ndsctl
+         file nodogsplash 
+         mkdir -p /opt/out/htdocs/images
+         mv -f ./nodogsplash /opt/out/nodogsplash 
+         mv -f ./ndsctl /opt/out/ndsctl
+         cp ./resources/nodogsplash.conf /opt/out/
+         cp ./resources/splash.html /opt/out/htdocs/
+         cp resources/splash.css /opt/out/htdocs/
+         cp resources/status.html /opt/out/htdocs/
+         cp resources/splash.jpg /opt/out/htdocs/images/
+         if [ -z "$TAG" ]; then
+              echo "tag=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+         fi
+         echo "haxi=$(git rev-parse HEAD)" >> $GITHUB_ENV
+         cd /opt/out
+         zip -r ../nodogsplash-$TARGET.zip ./*
+         echo "build_time=$(date '+%Y-%m-%d %H:%i:%S' | jq -sRr @uri)" >> $GITHUB_ENV
+         
+       #continue-on-error: true  
+       
+     - name: Install UPX
+       if: ${{ matrix.target != 'mips64-linux' && github.event.inputs.upx == 'true' }}
+       uses: crazy-max/ghaction-upx@v3
+       with:
+        version: v4.2.4
+        install-only: true
+     - name: Compressed packaging
+       if: ${{ matrix.target != 'mips64-linux' && github.event.inputs.upx == 'true' }}
+       run: upx --lzma --best /opt/out/* || true
+        
+     - uses: actions/upload-artifact@v4
+       with:
+        name: nodogsplash-${{ matrix.target }}
+        path: /opt/out/*
+     - name: Release
+       if: github.event.inputs.rel == 'true'
+       uses: softprops/action-gh-release@v2
+       with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: |
+           > ### ![](https://img.shields.io/badge/%E7%BC%96%E8%AF%91%E6%97%B6%E9%97%B4-${{ env.build_time }}-nodogsplash?logo=github&labelColor=%E9%A1%BB)![](https://img.shields.io/github/downloads/${{ github.repository }}/${{env.tag}}/total?label=%E4%B8%8B%E8%BD%BD%E6%AC%A1%E6%95%B0&logo=github)
+           
+           [Submit record](https://github.com/nodogsplash/nodogsplash/tree/${{ env.haxi }})
+           
+           [Official source code](https://github.com/lucktu/nodogsplash)
+           
+          tag_name: ${{env.tag}}
+          files: /opt/nodogsplash-${{ matrix.target }}.zip
+
+  del:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete process record
+        if: github.event.inputs.del == 'true'
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          retain_days: 0
+          keep_minimum_runs: 0
+        
