@@ -303,7 +303,7 @@ main_loop(void)
 	// Define the MHD startup parameter array, ending with MHD_OPTION_END.
   	struct MHD_Daemon *webserver = NULL;
 	int retry_count = 0;
-	const int max_retries = 50;
+	const int max_retries = 3;
 	const int retry_interval = 5;
 
 	while (webserver == NULL && retry_count < max_retries) {
