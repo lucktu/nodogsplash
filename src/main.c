@@ -301,12 +301,6 @@ main_loop(void)
     		}
 	}
 	// Define the MHD startup parameter array, ending with MHD_OPTION_END.
-  	struct MHD_Daemon *webserver = NULL;
-	int retry_count = 0;
-	const int max_retries = 50;
-	const int retry_interval = 5;
-
-	while (webserver == NULL && retry_count < max_retries) {
     	if (config->address_reuse) {
         	//debug(LOG_NOTICE, "Enable port reuse in the web authentication server");
        		webserver = MHD_start_daemon(
@@ -329,27 +323,6 @@ main_loop(void)
            		MHD_OPTION_END
         	);
     	}
-      
-    	if (webserver == NULL) {
-        	int err = errno;
-        	if (err == EADDRINUSE) {
-            	// Retry only if the port is already in use
-            	retry_count++;
-            	if (retry_count < max_retries) {
-                	debug(LOG_WARNING, "%d port is already in use,Retry in %d seconds (%d/%d)",
-                    config->gw_port, retry_interval, retry_count, max_retries);
-                	sleep(retry_interval);
-            	} else {
-                	debug(LOG_ERR, "%d port is occupied, maximum retries reached. exit", config->gw_port);
-                	exit(1);
-            	}
-        	} else {
-            	// Other errors exit immediately
-            	debug(LOG_ERR, "Unable to create a web authentication server: %s (errno=%d)", strerror(err), err);
-            	exit(1);
-        	}
-    	}
-	}
 
 	/* TODO: set listening socket */
 	debug(LOG_NOTICE, "Created web server on %s", config->gw_http_name);
